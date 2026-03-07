@@ -11,3 +11,4 @@ services:
       - IMMICH_EXTRA_ARGS=${IMMICH_EXTRA_ARGS:-}
       - IMMICH_SILENT=${IMMICH_SILENT:-1}
       - FAILED_DIR_NAME=${FAILED_DIR_NAME:-failed_uploads}
+      - IMMICH_ALBUM_MAP="${IMMICH_ALBUM_MAP:-}"

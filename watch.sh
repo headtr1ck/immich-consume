@@ -10,7 +10,9 @@ IMMICH_API_KEY="${IMMICH_API_KEY:-}"
 IMMICH_EXTRA_ARGS="${IMMICH_EXTRA_ARGS:-}"
 # FAILED_DIR is always relative to the watched consume dir inside the container
 FAILED_DIR="$CONSUME_DIR/${FAILED_DIR_NAME:-failed_uploads}"
+IMMICH_ALBUM_MAP="${IMMICH_ALBUM_MAP:-}"
 IMMICH_SILENT="${IMMICH_SILENT:-1}"
+
 
 if [ -z "$IMMICH_SERVER" ] || [ -z "$IMMICH_API_KEY" ]; then
   echo "IMMICH_SERVER and IMMICH_API_KEY must be provided via environment variables"
@@ -45,12 +47,77 @@ move_to_failed() {
   fi
 }
 
+# Return album name for a file based on IMMICH_ALBUM_MAP
+# Format for IMMICH_ALBUM_MAP: "subdir1:Album Name,subdir2:Other Album"
+# Album names may contain spaces but MUST NOT contain commas.
+get_album_for_file() {
+  local file="$1"
+  # Extract immediate subdirectory under CONSUME_DIR, if any
+  local rel="${file#$CONSUME_DIR/}"
+  local subdir="${rel%%/*}"
+  [ "$subdir" = "$rel" ] && subdir=""
+  if [ -z "$subdir" ] || [ -z "$IMMICH_ALBUM_MAP" ]; then
+    echo ""
+    return
+  fi
+
+  # never map the failed uploads directory to an album
+  failed_name="${FAILED_DIR##*/}"
+  if [ "$subdir" = "$failed_name" ]; then
+    echo ""
+    return
+  fi
+
+  # normalize the map string by stripping outer quotes if present
+  mapstr=$(printf '%s' "$IMMICH_ALBUM_MAP" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
+
+  IFS=',' read -r -a pairs <<< "$mapstr"
+  for p in "${pairs[@]}"; do
+    # strip surrounding quotes from the pair and trim whitespace
+    p=$(printf '%s' "$p" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//" -e 's/^ *//' -e 's/ *$//')
+    # split at first ':'
+    key="${p%%:*}"
+    val="${p#*:}"
+    # trim surrounding whitespace from key and val
+    key=$(printf '%s' "$key" | sed -e 's/^ *//' -e 's/ *$//')
+    val=$(printf '%s' "$val" | sed -e 's/^ *//' -e 's/ *$//')
+    # strip surrounding single or double quotes from the album name
+    val=$(printf '%s' "$val" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
+    if [ "$key" = "$subdir" ]; then
+      echo "$val"
+      return
+    fi
+  done
+  echo ""
+}
+
 # Upload helper: try upload, delete on success, move to FAILED_DIR on failure
 upload_file() {
   local file="$1"
   echo "Processing file: $file"
+  # Determine per-file album if mapping provided and no album already in EXTRA_ARGS
+  local album=""
+  if ! echo "$IMMICH_EXTRA_ARGS" | grep -q -- --album; then
+    album=$(get_album_for_file "$file")
+  fi
+
+  # Build command string safely quoting album and file
+  local cmd
+  cmd="immich-go upload from-folder --server=\"$IMMICH_SERVER\" --api-key=\"$IMMICH_API_KEY\""
+  if [ -n "$IMMICH_EXTRA_ARGS" ]; then
+    cmd="$cmd $IMMICH_EXTRA_ARGS"
+  fi
+  if [ -n "$album" ]; then
+    # shell-escape the album name for safe inclusion in the eval command
+    printf -v esc_album '%q' "$album"
+    cmd="$cmd --into-album=$esc_album"
+    # Log which album we're adding the image to
+    echo "Adding to album: $album"
+  fi
+  cmd="$cmd \"$file\""
+
   if [ "${IMMICH_SILENT}" = "1" ]; then
-    out=$(immich-go upload from-folder --server="$IMMICH_SERVER" --api-key="$IMMICH_API_KEY" $IMMICH_EXTRA_ARGS "$file" 2>&1)
+    out=$(eval "$cmd" 2>&1)
     rc=$?
     if [ $rc -eq 0 ]; then
       echo "Upload succeeded: $file - deleting local copy"
@@ -64,7 +131,7 @@ upload_file() {
       return 1
     fi
   else
-    if immich-go upload from-folder --server="$IMMICH_SERVER" --api-key="$IMMICH_API_KEY" $IMMICH_EXTRA_ARGS "$file"; then
+    if eval "$cmd"; then
       echo "Upload succeeded: $file - deleting local copy"
       rm -f -- "$file"
       return 0
@@ -76,16 +143,13 @@ upload_file() {
   fi
 }
 
-# Process files that already exist at startup (only regular files, stable size)
-for f in "$CONSUME_DIR"/*; do
+# Process files that already exist at startup (recursive). Use find to handle subdirs.
+find "$CONSUME_DIR" -type f -print0 | while IFS= read -r -d '' f; do
   [ -e "$f" ] || continue
-  # skip failed dir and directories
-  if [ "$f" = "$FAILED_DIR" ]; then
-    continue
-  fi
-  if [ -d "$f" ]; then
-    continue
-  fi
+  # skip files inside the failed dir
+  case "$f" in
+    "$FAILED_DIR"/*) continue ;;
+  esac
   if ! is_image "$f"; then
     echo "Skipping non-image at startup: $f - moving to $FAILED_DIR"
     move_to_failed "$f"
@@ -105,10 +169,14 @@ for f in "$CONSUME_DIR"/*; do
   upload_file "$f" || true
 done
 
-inotifywait -m -e close_write -e moved_to --format '%w%f' --quiet "$CONSUME_DIR" | while read -r file; do
+inotifywait -m -r -e close_write -e moved_to --format '%w%f' --quiet "$CONSUME_DIR" | while read -r file; do
   if [ -d "$file" ]; then
     continue
   fi
+  # skip files inside the failed dir
+  case "$file" in
+    "$FAILED_DIR"/*) continue ;;
+  esac
   if ! is_image "$file"; then
     echo "Skipping non-image: $file - moving to $FAILED_DIR"
     move_to_failed "$file"

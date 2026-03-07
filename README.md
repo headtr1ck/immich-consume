@@ -21,6 +21,7 @@ By default the container watches `/consume` (mounted from `./consume`). When a n
 - `IMMICH_EXTRA_ARGS` - optional extra arguments passed to `immich-go` (for example `--album=my-album`)
 - `IMMICH_SILENT` - when set to `1` (default) the script suppresses verbose output from `immich-go` and only prints its output when an upload fails; set to `0` to allow `immich-go` to print normally.
 - `FAILED_DIR_NAME` - Name of the directory inside the consume dir where failed uploads will be moved to. Defaults to `failed_uploads`
+ - `IMMICH_ALBUM_MAP` - optional mapping of subfolder -> album name. Format: `folder:Album Name,other:Other Album` (album names may contain spaces but must not contain commas). If provided, files placed under `/consume/<folder>/...` will be uploaded with `--album "Album Name"` unless `--album` is explicitly supplied via `IMMICH_EXTRA_ARGS`.
 
 ### Using a .env file
 
@@ -29,8 +30,7 @@ You can put environment variables in a `.env` file next to the `docker-compose.y
 ```env
 IMMICH_SERVER=http://immich.local:2283
 IMMICH_API_KEY=your_api_key_here
-IMMICH_EXTRA_ARGS=--album=my-album
-IMMICH_SILENT=1
+IMMICH_ALBUM_MAP=vacation:Vacation 2025,work:Work Photos
 ```
 
 ### Docker Compose volume mapping
@@ -39,13 +39,11 @@ By default the repository expects a `./consume` directory next to the `docker-co
 
 ```yaml
 services:
-	immich-consume:
-		build: .
-		environment:
-			- IMMICH_SERVER=${IMMICH_SERVER}
-			- IMMICH_API_KEY=${IMMICH_API_KEY}
-		volumes:
-			 /path/on/host/to/consume:/consume  # change this line in the docker-compose.yml file to alternate host path
+  immich-consume:
+	build: .
+	restart: unless-stopped
+    volumes:
+      /path/on/host/to/consume:/consume  # change this line in the docker-compose.yml file to alternate host path
 ```
 
 If you change the host path (left side of the `:`), ensure the directory exists and has appropriate permissions for the container to read/move files.
@@ -55,3 +53,4 @@ If it does not exist, it will be created with root only access rights.
 
 - This uses inotify; files must be fully written (close/write) before upload is attempted.
 - `immich-go` is built in the image during Docker build via `go install`.
+- 100% Vibe coded and untested. Use at your own risk!
