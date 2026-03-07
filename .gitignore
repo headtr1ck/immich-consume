@@ -1,0 +1,52 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.cache/
+
+# Node
+node_modules/
+
+# Docker / local overrides
+docker-compose.override.yml
+*.local
+
+# Editors/IDE
+.vscode/
+.idea/
+*.sublime-workspace
+
+# Temp / backup
+tmp/
+temp/
+*.tmp
+*~
+*.swp
+*.bak
+
+# Repo-specific: consume folder artifacts
+consume/failed_uploads/
+consume/*.db
+consume/*.sqlite
+consume/*.sqlite3
+
+# Binaries / tools
+immich-go
+ignore/*

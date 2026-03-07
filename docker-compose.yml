@@ -1,6 +1,5 @@
-version: '3.8'
 services:
-  immich-uploader:
+  immich-consume:
     build: .
     restart: unless-stopped
     volumes:
