@@ -3,13 +3,17 @@ set -euo pipefail
 
 # Static
 CONSUME_DIR="/consume"
+WORK_DIR="/workdir"
 
 # Configuration via env
 IMMICH_SERVER="${IMMICH_SERVER:-}"
 IMMICH_API_KEY="${IMMICH_API_KEY:-}"
 IMMICH_EXTRA_ARGS="${IMMICH_EXTRA_ARGS:-}"
-# FAILED_DIR is always relative to the watched consume dir inside the container
-FAILED_DIR="$CONSUME_DIR/${FAILED_DIR_NAME:-failed_uploads}"
+# New env var to define path to a static XMP sidecar template file
+# For each scanned image, this file is copied to <image>.xmp
+IMMICH_STATIC_SIDECAR="${IMMICH_STATIC_SIDECAR:-}"
+# IMMICH_FAILED_DIR is always relative to the watched consume dir inside the container
+IMMICH_FAILED_DIR="$CONSUME_DIR/${IMMICH_FAILED_DIR_NAME:-failed_uploads}"
 IMMICH_ALBUM_MAP="${IMMICH_ALBUM_MAP:-}"
 IMMICH_SILENT="${IMMICH_SILENT:-1}"
 
@@ -26,23 +30,31 @@ is_image() {
   esac
 }
 
+if [ -n "$IMMICH_STATIC_SIDECAR" ]; then
+  if [ ! -f "$IMMICH_STATIC_SIDECAR" ]; then
+    echo "XMP template not found: $IMMICH_STATIC_SIDECAR" >&2
+    return 1
+  fi
+fi
+
 echo "Watching directory: $CONSUME_DIR"
 
-# Ensure failed uploads directory exists
-mkdir -p "$FAILED_DIR"
+# Ensure directories exist
+mkdir -p "$IMMICH_FAILED_DIR"
+mkdir -p "$WORK_DIR"
 
-# Move file to FAILED_DIR with collision avoidance
+# Move file to IMMICH_FAILED_DIR with collision avoidance
 move_to_failed() {
   local src="$1"
-  local dest="$FAILED_DIR/$(basename "$src")"
+  local dest="$IMMICH_FAILED_DIR/$(basename "$src")"
   if [ -e "$dest" ]; then
-    dest="$FAILED_DIR/$(basename "$src").$(date +%s)"
+    dest="$IMMICH_FAILED_DIR/$(basename "$src").$(date +%s)"
   fi
   if mv -- "$src" "$dest"; then
     echo "Moved file to $dest"
     return 0
   else
-    echo "Failed to move $src to $FAILED_DIR; leaving in place"
+    echo "Failed to move $src to $IMMICH_FAILED_DIR; leaving in place"
     return 1
   fi
 }
@@ -62,7 +74,7 @@ get_album_for_file() {
   fi
 
   # never map the failed uploads directory to an album
-  failed_name="${FAILED_DIR##*/}"
+  failed_name="${IMMICH_FAILED_DIR##*/}"
   if [ "$subdir" = "$failed_name" ]; then
     echo ""
     return
@@ -91,14 +103,30 @@ get_album_for_file() {
   echo ""
 }
 
-# Upload helper: try upload, delete on success, move to FAILED_DIR on failure
+# Upload helper: try upload, delete on success, move to IMMICH_FAILED_DIR on failure
 upload_file() {
   local file="$1"
+  local filename=$(basename "$file")
   echo "Processing file: $file"
+
   # Determine per-file album if mapping provided and no album already in EXTRA_ARGS
   local album=""
   if ! echo "$IMMICH_EXTRA_ARGS" | grep -q -- --album; then
     album=$(get_album_for_file "$file")
+  fi
+
+  # move to work dir
+  local file_work="${WORK_DIR}/${filename}"
+  echo "Moving file: $file > $file_work"
+  mv $file $file_work
+
+  if [ -n "$IMMICH_STATIC_SIDECAR" ]; then
+    echo "Adding sidecar info to image"
+    exiftool -tagsfromfile "$IMMICH_STATIC_SIDECAR" -all:all "$file_work"
+    local orig="${file_work}_original"
+    if [ -f "$orig" ]; then
+      rm -f -- "$orig"
+    fi
   fi
 
   # Build command string safely quoting album and file
@@ -114,30 +142,30 @@ upload_file() {
     # Log which album we're adding the image to
     echo "Adding to album: $album"
   fi
-  cmd="$cmd \"$file\""
+  cmd="$cmd \"$file_work\""
 
   if [ "${IMMICH_SILENT}" = "1" ]; then
     out=$(eval "$cmd" 2>&1)
     rc=$?
     if [ $rc -eq 0 ]; then
-      echo "Upload succeeded: $file - deleting local copy"
-      rm -f -- "$file"
+      echo "Upload succeeded: $file_work - deleting local copy"
+      rm -f -- "$file_work"
       return 0
     else
-      echo "Upload failed for $file - moving to $FAILED_DIR"
+      echo "Upload failed for $file_work - moving to $IMMICH_FAILED_DIR"
       echo "immich-go output:" >&2
       echo "$out" >&2
-      move_to_failed "$file"
+      move_to_failed "$file_work"
       return 1
     fi
   else
     if eval "$cmd"; then
-      echo "Upload succeeded: $file - deleting local copy"
-      rm -f -- "$file"
+      echo "Upload succeeded: $file_work - deleting local copy"
+      rm -f -- "$file_work"
       return 0
     else
-      echo "Upload failed for $file - moving to $FAILED_DIR"
-      move_to_failed "$file"
+      echo "Upload failed for $file_work - moving to $IMMICH_FAILED_DIR"
+      move_to_failed "$file_work"
       return 1
     fi
   fi
@@ -146,15 +174,18 @@ upload_file() {
 # Process files that already exist at startup (recursive). Use find to handle subdirs.
 find "$CONSUME_DIR" -type f -print0 | while IFS= read -r -d '' f; do
   [ -e "$f" ] || continue
+
   # skip files inside the failed dir
   case "$f" in
-    "$FAILED_DIR"/*) continue ;;
+    "$IMMICH_FAILED_DIR"/*) continue ;;
   esac
+
   if ! is_image "$f"; then
-    echo "Skipping non-image at startup: $f - moving to $FAILED_DIR"
+    echo "Skipping non-image at startup: $f - moving to $IMMICH_FAILED_DIR"
     move_to_failed "$f"
     continue
   fi
+
   # ensure file is not being written by checking size stability
   if [ ! -f "$f" ]; then
     continue
@@ -169,16 +200,17 @@ find "$CONSUME_DIR" -type f -print0 | while IFS= read -r -d '' f; do
   upload_file "$f" || true
 done
 
-inotifywait -m -r -e close_write -e moved_to --format '%w%f' --quiet "$CONSUME_DIR" | while read -r file; do
+inotifywait -m -r -e close_write -e moved_to --format '%w%f' --exclude '(_original|_exiftool_tmp)$' --quiet "$CONSUME_DIR" | while read -r file; do
   if [ -d "$file" ]; then
     continue
   fi
   # skip files inside the failed dir
   case "$file" in
-    "$FAILED_DIR"/*) continue ;;
+    "$IMMICH_FAILED_DIR"/*) continue ;;
   esac
+
   if ! is_image "$file"; then
-    echo "Skipping non-image: $file - moving to $FAILED_DIR"
+    echo "Skipping non-image: $file - moving to $IMMICH_FAILED_DIR"
     move_to_failed "$file"
     continue
   fi

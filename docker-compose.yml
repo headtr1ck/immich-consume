@@ -3,7 +3,8 @@ services:
     build: .
     restart: unless-stopped
     volumes:
-      - ./consume:/consume
+      - ./onsume:/consume
+      - ./sidecar.xmp:/sidecar.xml
     environment:
       - IMMICH_SERVER=${IMMICH_SERVER}
       - IMMICH_API_KEY=${IMMICH_API_KEY}
@@ -12,3 +13,4 @@ services:
       - IMMICH_SILENT=${IMMICH_SILENT:-1}
       - FAILED_DIR_NAME=${FAILED_DIR_NAME:-failed_uploads}
       - IMMICH_ALBUM_MAP="${IMMICH_ALBUM_MAP:-}"
+      - IMMICH_STATIC_SIDECAR=/sidecar.xml
