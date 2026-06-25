@@ -48,5 +48,4 @@ consume/*.sqlite
 consume/*.sqlite3
 
 # Binaries / tools
-immich-go
 ignore/*

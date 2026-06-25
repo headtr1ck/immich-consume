@@ -1,6 +1,6 @@
 # immich-consume
 
-Docker service that watches a directory and uploads new images to an Immich server using immich-go.
+Docker service that watches a directory and uploads new images to an Immich server using the Immich REST API directly.
 
 ## Usage
 
@@ -12,16 +12,16 @@ Docker service that watches a directory and uploads new images to an Immich serv
 docker compose up --build -d
 ```
 
-By default the container watches `/consume` (mounted from `./consume`). When a new image/video is added the service runs `immich-go upload from-folder <path>` and deletes the file on successful upload.
+By default the container watches `/consume` (mounted from `./consume`). When a new image/video is added the service uploads it directly to Immich using the server API, then optionally adds it to an album.
 
 ## Configuration
 
 - `IMMICH_SERVER` - URL of your Immich server (e.g. http://immich.local:2283)
 - `IMMICH_API_KEY` - API key for uploads
-- `IMMICH_EXTRA_ARGS` - optional extra arguments passed to `immich-go` (for example `--album=my-album`)
-- `IMMICH_SILENT` - when set to `1` (default) the script suppresses verbose output from `immich-go` and only prints its output when an upload fails; set to `0` to allow `immich-go` to print normally.
+- `IMMICH_DEVICE_ID` - Device identifier sent with uploads. Defaults to `immich-consume`
+- `IMMICH_SILENT` - when set to `1` (default) the script suppresses verbose output and only prints details on failure; set to `0` to allow normal status messages.
 - `FAILED_DIR_NAME` - Name of the directory inside the consume dir where failed uploads will be moved to. Defaults to `failed_uploads`
- - `IMMICH_ALBUM_MAP` - optional mapping of subfolder -> album name. Format: `folder:Album Name,other:Other Album` (album names may contain spaces but must not contain commas). If provided, files placed under `/consume/<folder>/...` will be uploaded with `--album "Album Name"` unless `--album` is explicitly supplied via `IMMICH_EXTRA_ARGS`.
+- `IMMICH_ALBUM_MAP` - optional mapping of subfolder -> album name. Format: `folder:Album Name,other:Other Album` (album names may contain spaces but must not contain commas). If provided, files placed under `/consume/<folder>/...` will be uploaded and then added to the matched Immich album.
 
 ### Using a .env file
 
@@ -52,5 +52,4 @@ If it does not exist, it will be created with root only access rights.
 ## Notes
 
 - This uses inotify; files must be fully written (close/write) before upload is attempted.
-- `immich-go` is built in the image during Docker build via `go install`.
 - 100% Vibe coded and untested. Use at your own risk!
